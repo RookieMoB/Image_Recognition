@@ -7,6 +7,34 @@ Recognition::Recognition(QWidget *parent)
 {
     ui->setupUi(this);
 
+    this->window()->move(30, 100);
+
+    // 得到摄像头的所有信息
+    camera_info_list = QCameraInfo::availableCameras();
+    for (const QCameraInfo& temp_cam : camera_info_list)
+    {
+        qDebug() << "deviceName " << temp_cam.deviceName() << "|||" << "description " << temp_cam.description();
+        ui->comboBox->addItem(temp_cam.description());
+    }
+    camera_info_list.append(QCameraInfo("测试"));
+    ui->comboBox->addItem("测试");
+
+    ui->comboBox->addItem("null");
+    ui->comboBox->addItem("可以添加外接摄像头或者虚拟摄像头");
+
+    QVariant v(0);          //禁用
+    ui->comboBox->setItemData(camera_info_list.length(), v, Qt::UserRole - 1);
+    ui->comboBox->setItemData(camera_info_list.length() - 1, v, Qt::UserRole - 1);
+    ui->comboBox->setItemData(camera_info_list.length() + 1, v, Qt::UserRole - 1);
+    qDebug() << "list size " << camera_info_list.length();
+
+    // 绑定下拉菜单选项与实际摄像头的切换
+    connect(ui->comboBox, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &Recognition::PickCamera);
+
+    // 检测是否可以使用https进行网络请求
+    // qDebug() << "Qt version:" << qVersion();
+    // qDebug() << "Qt ssl v" << QSslSocket::sslLibraryBuildVersionString();
+    // qDebug() << "OpenSSL支持情况:" << QSslSocket::supportsSsl();
     // 初始化指针
     camera = new QCamera();                                                     // 唤起摄像头
     c_v_finder = new QCameraViewfinder();                                       // 摄像头取景器
@@ -15,7 +43,10 @@ Recognition::Recognition(QWidget *parent)
 
     camera->setViewfinder(c_v_finder);                                          // 为摄像头设置取景器
     camera->setCaptureMode(QCamera::CaptureStillImage);                         // 设置摄像头的取景方式，为捕捉静态图片
-    c_i_capture->setCaptureDestination(QCameraImageCapture::CaptureToFile);     // 设置捕获的图像的存储方式——————文件
+    // 弃用该方法，会在图片文件夹下，生成一系列照片
+    // c_i_capture->setCaptureDestination(QCameraImageCapture::CaptureToFile);     // 设置捕获的图像的存储方式——————文件
+    // 改用 将图片输出到缓冲
+    c_i_capture->setCaptureDestination(QCameraImageCapture::CaptureToBuffer);
     camera->start();                                                            // 摄像头开始工作
 
     connect(ui->pushButton, &QPushButton::clicked, this, &Recognition::preparePostData);    // 拍照
@@ -29,6 +60,7 @@ Recognition::Recognition(QWidget *parent)
     v_box_l->addWidget(ui->label);
     v_box_l->addWidget(ui->pushButton);
     QVBoxLayout* v_box_r = new QVBoxLayout;
+    v_box_r->addWidget(ui->comboBox);
     v_box_r->addWidget(c_v_finder);
     v_box_r->addWidget(ui->textBrowser);
 
@@ -44,6 +76,9 @@ Recognition::Recognition(QWidget *parent)
     connect(refresh_time, &QTimer::timeout, this, &Recognition::TakePhoto);     // 当定时器时间到了之后，进行拍照
     refresh_time->start(25);                                                    // 启动定时器
 
+    net_timer = new QTimer(this);                                               // 利用定时器去发送给人脸识别请求
+    connect(net_timer, &QTimer::timeout, this, &Recognition::preparePostData);
+
 
     // 服务器
     token_manager = new QNetworkAccessManager(this);
@@ -52,7 +87,7 @@ Recognition::Recognition(QWidget *parent)
     connect(image_manager, &QNetworkAccessManager::finished, this, &Recognition::ImageReply);   // 图像识别
 
     // 输出日志查看qt支持哪些协议
-    qDebug() << token_manager->supportedSchemes();
+//    qDebug() << token_manager->supportedSchemes();
 //    qDebug() << "--------------------------------------";
 //    qDebug() << "SSL support:" << QSslSocket::supportsSsl();
 //    qDebug() << "--------------------------------------";
@@ -69,10 +104,10 @@ Recognition::Recognition(QWidget *parent)
     url.setQuery(query);                                                                // 将拼接好的网址对url进行重新赋值
     qDebug() << url;
 
-    if (QSslSocket::supportsSsl())
-    {// 检测是否支持Ssl
-        qDebug() << "SSL libraries are available.";
-    }
+//    if (QSslSocket::supportsSsl())
+//    {// 检测是否支持Ssl
+//        qDebug() << "SSL libraries are available.";
+//    }
 
     ///////////////////////配置ssl//////////////////////////
     ssl_configuration = QSslConfiguration::defaultConfiguration();      // 对ssl配置进行默认初始化
@@ -90,14 +125,32 @@ void Recognition::ShowCamera(int id, QImage preview)                    // 对�
 {
     Q_UNUSED(id);
 
-    this->img = preview;                                                // 将图片进行保存，用于之后的和百度的人脸识别
+    QImage flippedImage = preview.mirrored(true, false);                // 展示的时候是否对图像进行反转显示
+
+    this->img = flippedImage;                                                // 将图片进行保存，用于之后的和百度的人脸识别
 
     // 绘制人脸框
-    QPainter m_painter(&preview);                                       // 将该图片保存一个副本给到「this->img」让「this->img」去向百度进行访问，之后再对该图片进行绘制放置到「ui->label」上，其实是上一张图片的框
+    QPainter m_painter(&flippedImage);                                  // 将该图片保存一个副本给到「this->img」让「this->img」去向百度进行访问，之后再对该图片进行绘制放置到「ui->label」上，其实是上一张图片的框
     m_painter.setPen(Qt::green);                                        // 设置🖌画笔颜色为绿色
     m_painter.drawRect(face_left, face_top, face_width, face_height);   // 绘制矩形
 
-    QImage flippedImage = preview.mirrored(true, false);                // 展示的时候是否对图像进行反转显示
+    // 在展示图片的时候，展示对应该帧的图像信息
+    // 设置字体
+    QFont font = m_painter.font();      // 使用  m_painter.font()进行初始化 是为了获取当前的字体设置，以便可以根据需要对其进行修改或保存，并在后续的绘图操作中使用它。
+    font.setPixelSize(30);
+    m_painter.setFont(font);
+
+    int longitudinal_spacing = 40;
+
+    m_painter.drawText(face_left + face_width + 10, face_top, QString("当前人脸个数为 : ").append(QString::number(face_num)));
+    m_painter.drawText(face_left + face_width + 10, face_top + longitudinal_spacing * 2, QString("年龄 : ").append(QString::number(age)));
+    m_painter.drawText(face_left + face_width + 10, face_top + longitudinal_spacing * 3, QString("类型 : ").append(type));
+    m_painter.drawText(face_left + face_width + 10, face_top + longitudinal_spacing * 4, QString("性别 : ").append(gender));
+    m_painter.drawText(face_left + face_width + 10, face_top + longitudinal_spacing * 5, QString("是否戴眼镜 : ").append(glasses));
+    m_painter.drawText(face_left + face_width + 10, face_top + longitudinal_spacing * 6, QString("表情 : ").append(emotion));
+    m_painter.drawText(face_left + face_width + 10, face_top + longitudinal_spacing * 7, QString("颜值 : ")
+                       .append(QString::number(beauty > 40 ? beauty : beauty * 2.5, 'f', 2)));
+
     ui->label->setPixmap(QPixmap::fromImage(flippedImage));
 
     // 保存到文件
@@ -139,7 +192,8 @@ void Recognition::TokenReply(QNetworkReply *reply)                              
 
     reply->deleteLater();                                                   // 用完就释放，养成好习惯
 
-        preparePostData();                                                  // 为下一次的人脸识别做准备
+//    net_timer->start(500);
+    preparePostData();                                                      // 为下一次的人脸识别做准备
 }
 
 
@@ -164,10 +218,33 @@ void Recognition::preparePostData()                                             
     connect(worker, &Worker::resultReady, this, &Recognition::BeginFaceDetect);         // 干完活了
     connect(childThread, &QThread::finished, worker, &QObject::deleteLater);            // 当子线程工作完毕之后，将worker释放掉
     childThread->start();                                                               // 启动子线程
-    emit beginWork(this->img);                                                          // 通知工人开始干活
+    emit beginWork(this->img);                                             // 通知工人开始干活
+//    emit beginWork(this->img, childThread);                                             // 通知工人开始干活
 }
 
-void Recognition::BeginFaceDetect(QByteArray post_data)                                 // 开启人脸识别
+// 切换当前摄像头
+void Recognition::PickCamera(int index)
+{
+    qDebug() << camera_info_list.at(index).description();
+    refresh_time->stop();                                                                       // 进行切换摄像头的时候，将定时器拍照暂时先暂停
+    camera->stop();                                                                             // 暂停摄像头进行切换
+
+    camera = new QCamera(camera_info_list.at(index));                                           // 使用新创建的摄像头替换原先的
+    c_i_capture = new QCameraImageCapture(camera);                                              // 创建新的拍摄按钮
+    camera->setViewfinder(c_v_finder);                                                          // 为摄像头设置取景器
+
+    camera->setCaptureMode(QCamera::CaptureStillImage);                                         // 设置摄像头的取景方式 静态图片
+    c_i_capture->setCaptureDestination(QCameraImageCapture::CaptureToBuffer);                   // 将新创建的摄像头的拍摄出来的图片选择模式为 缓存
+
+    connect(c_i_capture, &QCameraImageCapture::imageCaptured, this, &Recognition::ShowCamera);  // 拍照成功之后将图片显示到label组件上，对捕获到的静态图片进行反转
+
+    // 开启
+    camera->start();
+    refresh_time->start(25);
+}
+
+void Recognition::BeginFaceDetect(QByteArray post_data)       // 开启人脸识别
+//void Recognition::BeginFaceDetect(QByteArray post_data, QThread* overThread)       // 开启人脸识别
 {
     /*
        * 另一个槽的内容
@@ -176,6 +253,22 @@ void Recognition::BeginFaceDetect(QByteArray post_data)                         
        * 用 post 发送数据给百度API
     */
     childThread->quit();                                                                // 关闭子进程
+    childThread->wait();                                                                // 等待关闭子进程
+    if (childThread->isFinished())
+    {
+        qDebug() << "子线程结束";
+    } else {
+        qDebug() << "子线程运行中";
+    }
+
+    //    overThread->quit();                                                                // 关闭子进程
+    //    overThread->wait();                                                                // 等待关闭子进程
+    //    if (overThread->isFinished())
+    //    {
+    //        qDebug() << "子线程结束";
+    //    } else {
+    //        qDebug() << "子线程运行中";
+    //    }
 
     //////////组装图像识别请求/////////////////
     QUrl url("https://aip.baidubce.com/rest/2.0/face/v3/detect");
@@ -215,9 +308,27 @@ void Recognition::ImageReply(QNetworkReply *reply)                              
     QString face_info;
     QJsonObject json_obj = doc.object();
 
+    if (json_obj.contains("timestamp"))
+    {// 拿取时间戳
+        int tep_time = json_obj.take("timestamp").toInt();
+        if (tep_time < cur_time)
+        {// 如果该次拿取的时间戳比最新的时间距离1970年近，不做处理
+            return;
+        }
+        else
+        {// 否则，将该次时间戳赋值给 cur_time
+            cur_time = tep_time;
+        }
+    }
+
     if (json_obj.contains("result"))                                                // 从服务器给的JSON对象内拿取 result 结果
     {
         QJsonObject result_obj = json_obj.take("result").toObject();
+        if (result_obj.contains("face_num"))
+        {// 拿取几张人脸
+            face_num = result_obj.take("face_num").toInt();
+            face_info.append("当前人脸个数为 : ").append(QString::number(face_num)).append("\r\n");
+        }
         if (result_obj.contains("face_list"))
         {
             QJsonArray face_list = result_obj.take("face_list").toArray();          // 将结果中的 face_list 拿取出来
@@ -244,16 +355,34 @@ void Recognition::ImageReply(QNetworkReply *reply)                              
             }
             if (face_obj.contains("age"))
             {// 取出年龄
-                double age = face_obj.take("age").toDouble();
+                age = face_obj.take("age").toDouble();
                 face_info.append("年龄: ").append(QString::number(age, 'f', 2)).append("\r\n");                  // 拼接到字符串上
+            }
+            if (face_obj.contains("face_type"))
+            {// 拿取人脸类型
+                QJsonObject face_type_obj = face_obj.take("face_type").toObject();
+                if (face_type_obj.contains("type"))
+                {
+                    type = face_type_obj.take("type").toString();
+                    face_info.append("类型 : ").append(type).append("\r\n");
+                }
             }
             if (face_obj.contains("gender"))
             {// 取出性别
                 QJsonObject gender_obj = face_obj.take("gender").toObject();
                 if (gender_obj.contains("type"))
                 {
-                    QString gender = gender_obj.take("type").toString();
+                    gender = gender_obj.take("type").toString();
                     face_info.append("性别: ").append(gender).append("\r\n");                                     // 拼接到字符串上
+                }
+            }
+            if (face_obj.contains("glasses"))
+            {// 取出是否戴眼镜
+                QJsonObject glasses_obj = face_obj.take("glasses").toObject();
+                if (glasses_obj.contains("type"))
+                {
+                    glasses = glasses_obj.take("type").toString();
+                    face_info.append("是否戴眼镜 : ").append(glasses == "none" ? "不戴" : "戴").append("\r\n");
                 }
             }
             if (face_obj.contains("emotion"))
@@ -261,22 +390,22 @@ void Recognition::ImageReply(QNetworkReply *reply)                              
                 QJsonObject emotion_obj = face_obj.take("emotion").toObject();
                 if (emotion_obj.contains("type"))
                 {
-                    QString emotion = emotion_obj.take("type").toString();
+                    emotion = emotion_obj.take("type").toString();
                     face_info.append("表情: ").append(emotion).append("\r\n");                                    // 拼接到字符串上
                 }
             }
-            if (face_obj.contains("mask"))
-            {// 取出是否戴口罩
-                QJsonObject mask_obj = face_obj.take("mask").toObject();
-                if (mask_obj.contains("type"))
-                {
-                    int mask = mask_obj.take("type").toInt();
-                    face_info.append("是否戴口罩: ").append(mask == 0 ? "否" : "是").append("\r\n");               // 拼接到字符串上
-                }
-            }
+//            if (face_obj.contains("mask"))
+//            {// 取出是否戴口罩
+//                QJsonObject mask_obj = face_obj.take("mask").toObject();
+//                if (mask_obj.contains("type"))
+//                {
+//                    int mask = mask_obj.take("type").toInt();
+//                    face_info.append("是否戴口罩: ").append(mask == 0 ? "否" : "是").append("\r\n");               // 拼接到字符串上
+//                }
+//            }
             if (face_obj.contains("beauty"))
             {// 颜值
-                double beauty = face_obj.take("beauty").toDouble();
+                beauty = face_obj.take("beauty").toDouble();
                 face_info.append("颜值: ").append(QString::number(beauty, 'f', 2)).append("\r\n");               // 拼接到字符串上
             }
 

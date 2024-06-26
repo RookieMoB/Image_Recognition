@@ -7,7 +7,7 @@ QT       += multimediawidgets
 # 为了网络请求和应答
 QT       += network
 
-INCLUDEPATH += D:/QtTools/openssl/openssl-1.1.1g/include
+# INCLUDEPATH += D:/QtTools/openssl/openssl-1.1.1g/include
 # INCLUDEPATH += C:/OpenSSL-Win32/include
 
 greaterThan(QT_MAJOR_VERSION, 4): QT += widgets

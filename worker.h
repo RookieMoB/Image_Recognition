@@ -16,9 +16,11 @@ public:
 
 public slots:
     void DoWork(QImage);
+//    void DoWork(QImage, QThread*);
 
 signals:
     void resultReady(QByteArray);
+//    void resultReady(QByteArray, QThread*);
 
 };
 
